@@ -1,0 +1,26 @@
+# ──────────────────────────────────────────────────────────
+# LlamaFactory — Inference (Single Node, Multi-GPU)
+# ──────────────────────────────────────────────────────────
+# Launches an OpenAI-compatible API server using vLLM.
+# vLLM auto-detects GPUs and handles batching + KV cache.
+#
+# Launch: llamafactory-cli api configs/inference_single_node.yaml
+#
+# Test:
+#   curl http://localhost:8000/v1/chat/completions \
+#     -H "Content-Type: application/json" \
+#     -d '{"model":"llama-3","messages":[{"role":"user","content":"Hi"}]}'
+# ──────────────────────────────────────────────────────────
+
+### Model
+model_name_or_path: meta-llama/Llama-3.1-8B-Instruct
+template: llama3
+
+### Backend
+infer_backend: vllm                  # vLLM — production-grade serving
+
+### vLLM settings
+vllm_enforce_eager: false            # allow CUDA graphs for speed
+vllm_maxlen: 4096                    # max context length (controls KV cache alloc)
+# vllm_tensor_parallel_size: 4       # uncomment for 70B+ models across N GPUs
+# vllm_gpu_utilization: 0.9          # fraction of GPU memory for KV cache

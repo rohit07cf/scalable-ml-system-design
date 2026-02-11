@@ -1,0 +1,44 @@
+# ──────────────────────────────────────────────────────────
+# LlamaFactory — LoRA Fine-Tuning (Single Node, Multi-GPU)
+# ──────────────────────────────────────────────────────────
+# Launch: llamafactory-cli train configs/finetune_lora_single_node.yaml
+# LlamaFactory auto-detects GPUs and runs DDP via torchrun.
+# ──────────────────────────────────────────────────────────
+
+### Model
+model_name_or_path: meta-llama/Llama-3.1-8B-Instruct
+
+### Method
+stage: sft                          # supervised fine-tuning
+finetuning_type: lora               # LoRA — freeze base, train adapters
+lora_rank: 8                        # low-rank dimension (8 or 16 typical)
+lora_alpha: 16                      # scaling = alpha / rank
+lora_dropout: 0.05                  # regularization
+lora_target: all                    # apply to all linear layers
+
+### Dataset
+dataset: my_support_data            # registered in dataset_info.json
+template: llama3                    # chat template matching model family
+cutoff_len: 2048                    # max sequence length
+
+### Output
+output_dir: ./output/lora_single_node
+logging_steps: 10
+save_strategy: steps
+save_steps: 500
+save_total_limit: 3                 # keep only 3 most recent checkpoints
+
+### Training
+per_device_train_batch_size: 4      # per GPU
+gradient_accumulation_steps: 2      # effective = 4 * 2 * num_gpus
+num_train_epochs: 3
+learning_rate: 2.0e-4
+warmup_ratio: 0.03
+lr_scheduler_type: cosine
+
+### Precision
+bf16: true                          # use bf16 on A100/H100 (fp16 on V100)
+
+### Misc
+overwrite_output_dir: true
+report_to: none                     # set to "wandb" or "tensorboard" in practice

@@ -1,0 +1,50 @@
+# ──────────────────────────────────────────────────────────
+# LlamaFactory — QLoRA Fine-Tuning (Single Node, Multi-GPU)
+# ──────────────────────────────────────────────────────────
+# QLoRA = 4-bit quantized base model + 16-bit LoRA adapters.
+# Uses ~60% less memory than standard LoRA.
+#
+# Launch: llamafactory-cli train configs/finetune_qlora_single_node.yaml
+# ──────────────────────────────────────────────────────────
+
+### Model
+model_name_or_path: meta-llama/Llama-3.1-8B-Instruct
+
+### Method
+stage: sft
+finetuning_type: lora
+lora_rank: 8
+lora_alpha: 16
+lora_dropout: 0.05
+lora_target: all
+
+### Quantization (this is what makes it QLoRA)
+quantization_bit: 4                  # load base model in 4-bit (NF4)
+quantization_method: bitsandbytes    # uses bitsandbytes for 4-bit
+
+### Dataset
+dataset: my_support_data
+template: llama3
+cutoff_len: 2048
+
+### Output
+output_dir: ./output/qlora_single_node
+logging_steps: 10
+save_strategy: steps
+save_steps: 500
+save_total_limit: 3
+
+### Training
+per_device_train_batch_size: 8       # can use larger batch (less base memory)
+gradient_accumulation_steps: 1
+num_train_epochs: 3
+learning_rate: 2.0e-4
+warmup_ratio: 0.03
+lr_scheduler_type: cosine
+
+### Precision
+bf16: true
+
+### Misc
+overwrite_output_dir: true
+report_to: none

@@ -1,0 +1,25 @@
+# ──────────────────────────────────────────────────────────
+# LlamaFactory — Inference (Multi-Node Replica)
+# ──────────────────────────────────────────────────────────
+# Each node runs an INDEPENDENT inference server.
+# A load balancer in front distributes requests.
+# No cross-node communication — pure data parallelism.
+#
+# Launch (on each node):
+#   llamafactory-cli api configs/inference_multi_node.yaml
+#
+# Load balancer routes to: node0:8000, node1:8000, node2:8000
+# ──────────────────────────────────────────────────────────
+
+### Model — use local cached path (pulled from S3/NFS at startup)
+model_name_or_path: /models/llama-3-8b-support
+template: llama3
+
+### Backend
+infer_backend: vllm
+
+### vLLM settings
+vllm_enforce_eager: false
+vllm_maxlen: 4096
+# vllm_tensor_parallel_size: 1       # 1 GPU per replica (adjust if model is large)
+# vllm_gpu_utilization: 0.9
