@@ -1,0 +1,55 @@
+# ──────────────────────────────────────────────────────────
+# LlamaFactory — LoRA Fine-Tuning (Multi-Node)
+# ──────────────────────────────────────────────────────────
+# This config is ALMOST IDENTICAL to single-node LoRA.
+# Multi-node setup is handled by torchrun env vars, not the YAML.
+#
+# Launch (on each node):
+#   torchrun --nnodes=2 --nproc_per_node=4 \
+#            --node_rank=$NODE_RANK \
+#            --master_addr=$MASTER_ADDR \
+#            --master_port=$MASTER_PORT \
+#            -m llamafactory.train \
+#            configs/finetune_lora_multi_node.yaml
+# ──────────────────────────────────────────────────────────
+
+### Model
+model_name_or_path: meta-llama/Llama-3.1-8B-Instruct
+
+### Method
+stage: sft
+finetuning_type: lora
+lora_rank: 8
+lora_alpha: 16
+lora_dropout: 0.05
+lora_target: all
+
+### Dataset
+dataset: my_support_data
+template: llama3
+cutoff_len: 2048
+
+### Output — use SHARED storage (S3-fuse, NFS, etc.)
+output_dir: /shared_storage/output/lora_multi_node
+logging_steps: 10
+save_strategy: steps
+save_steps: 200                      # more frequent (spot/preemption risk)
+save_total_limit: 3
+
+### Training
+per_device_train_batch_size: 4
+gradient_accumulation_steps: 2
+num_train_epochs: 3
+learning_rate: 2.0e-4
+warmup_ratio: 0.03
+lr_scheduler_type: cosine
+
+### Precision
+bf16: true
+
+### DeepSpeed (optional — useful for large full FT, less needed for LoRA)
+# deepspeed: configs/ds_z2_config.json
+
+### Misc
+overwrite_output_dir: true
+report_to: none
