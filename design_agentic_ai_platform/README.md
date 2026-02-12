@@ -51,17 +51,27 @@ A minimal, runnable hierarchical agent tree with structured handoffs.
               │  Supervisor  │  (root of AgentTree)
               │  Orchestrator│
               └──────┬───────┘
-                     │  HandoffResult (Pydantic-validated)
-        ┌────────────┼────────────┐
-        ▼            ▼            ▼
-   ┌─────────┐ ┌──────────┐ ┌──────────┐
-   │ Triage  │ │ Specialist│ │ Verifier │
-   │ Agent   │ │ Agent     │ │ Agent    │
-   └─────────┘ └──────────┘ └──────────┘
-        │            │            │
-        └────────────┴────────────┘
-           All return HandoffResult
-           back to Supervisor
+                     │
+            ┌────────┴────────┐
+            ▼                 ▼
+     Plan (optional)    Route + Execute
+     (PlannerCallable)  (child agents)
+                              │
+                 ┌────────────┼────────────┐
+                 ▼            ▼            ▼
+            ┌─────────┐ ┌──────────┐ ┌──────────┐
+            │ Triage  │ │ Specialist│ │ Verifier │
+            │ Agent   │ │ Agent     │ │ Agent    │
+            └────┬────┘ └────┬─────┘ └────┬─────┘
+                 │           │            │
+            Tool Calls  Tool Calls   Tool Calls
+           (registered  (erp_lookup, (verify_answer)
+            callables)   policy_search)
+                 │           │            │
+                 └───────────┴────────────┘
+                    All return HandoffResult
+                    (Pydantic-validated) back
+                    to Supervisor
 ```
 
 ### Files
@@ -69,11 +79,11 @@ A minimal, runnable hierarchical agent tree with structured handoffs.
 | File | Purpose |
 |---|---|
 | `agent_tree/__init__.py` | Public API exports |
-| `agent_tree/agent_node.py` | `AgentNode` — single node with children, tools, parent ref |
+| `agent_tree/agent_node.py` | `AgentNode` — children, tool registry, `as_tool()`, `run_tool()` |
 | `agent_tree/agent_tree.py` | `AgentTree` — root wrapper with `visualize()` and `find()` |
-| `agent_tree/handoff_models.py` | `HandoffResult` + `SupervisorResult` Pydantic models |
-| `agent_tree/orchestrator.py` | `SupervisorOrchestrator` — async loop with hooks |
-| `agent_tree/demo.py` | End-to-end runnable demo |
+| `agent_tree/handoff_models.py` | `HandoffResult` + `ToolResult` + `SupervisorResult` Pydantic models |
+| `agent_tree/orchestrator.py` | `SupervisorOrchestrator` — plan-then-execute loop with 3-tier hooks |
+| `agent_tree/demo.py` | End-to-end runnable demo (tools, planner, hooks) |
 
 ### Quick Start
 
@@ -88,25 +98,43 @@ python agent_tree/demo.py
 ```python
 from agent_tree import AgentNode, AgentTree
 
-# 1. Create nodes
+# 1. Create nodes + register tool callables (not just strings)
 supervisor = AgentNode("supervisor")
-triage     = AgentNode("triage", tools=["classify"])
-specialist = AgentNode("invoice-specialist", tools=["erp_lookup"])
-verifier   = AgentNode("verifier", tools=["policy_check"])
+triage     = AgentNode("triage")
+specialist = AgentNode("invoice-specialist")
+
+async def erp_lookup(invoice_id: str) -> dict:
+    return {"status": "rejected", "reason": "missing_po"}
+
+specialist.add_tool(erp_lookup)          # registers callable + name
+specialist.add_tool("policy_search")     # name-only also works
 
 # 2. Wire the hierarchy
 supervisor.add_child(triage)
 supervisor.add_child(specialist)
-supervisor.add_child(verifier)
 
-# 3. Wrap in a tree and inspect
+# 3. Agents-as-tools: expose a child as a callable tool on the parent
+#    (mirrors OpenAI Agents SDK: agent.as_tool())
+supervisor.add_tool(specialist.as_tool("run_specialist"))
+
+# 4. Wrap in a tree and inspect
 tree = AgentTree(supervisor)
 print(tree.visualize())
-# supervisor (root)
-# ├── triage [tools: classify]
-# ├── invoice-specialist [tools: erp_lookup]
-# └── verifier [tools: policy_check]
+# supervisor (root) [tools: run_specialist]
+# ├── triage
+# └── invoice-specialist [tools: erp_lookup, policy_search]
 ```
+
+### Tool Calls vs Handoffs
+
+| Concept | What happens | Example |
+|---|---|---|
+| **Tool Call** | Agent invokes a function, gets result, *continues reasoning* | `node.run_tool("erp_lookup", invoice_id="4821")` → `ToolResult` |
+| **Handoff** | Agent returns `HandoffResult` to Supervisor, *gives up control* | `HandoffResult(status="ok", summary="...")` |
+
+- **Tool calls** happen *within* a child agent's `run()` — they are sub-steps
+- **Handoffs** happen *between* agents — the child returns control to the Supervisor
+- The Supervisor can also invoke children as tools via `child.as_tool()`
 
 ### How Handoffs Work
 
@@ -114,7 +142,7 @@ Every child agent returns a **`HandoffResult`** — a Pydantic model that the
 Supervisor validates and uses to decide what to do next.
 
 ```python
-from agent_tree import HandoffResult
+from agent_tree import HandoffResult, ToolResult, HandoffTraces
 
 result = HandoffResult(
     from_agent="invoice-specialist",
@@ -123,26 +151,44 @@ result = HandoffResult(
     summary="Invoice #4821 rejected due to missing PO.",
     payload={"invoice_id": "4821", "reason": "missing_po"},
     artifacts=["erp://invoices/4821"],
+    traces=HandoffTraces(
+        tool_calls=["erp_lookup"],
+        tool_results=[ToolResult(tool_name="erp_lookup", output={...}, status="ok")],
+        reasoning_steps=["Need to look up invoice in ERP"],
+        token_usage=2500,
+    ),
 )
 ```
 
-**Supervisor loop**: route to child → receive `HandoffResult` → if `ok`, done; if `needs_more_info` or `failed`, try next child.
+**Supervisor loop**: plan (optional) → route to child → receive `HandoffResult` → if `ok`, done; if `needs_more_info`, enrich context + try next child; if `failed`, try next child.
 
 ### Running the Orchestrator
 
 ```python
 from agent_tree import AgentTree, SupervisorOrchestrator, OrchestratorHooks
 
+# Optional planner (mirrors reference's call_reasoner)
+async def my_planner(user_input: str) -> dict:
+    return {"strategy": "triage → specialist → verifier"}
+
 orchestrator = SupervisorOrchestrator(
     tree=tree,
     hooks=OrchestratorHooks(
-        on_node_start=my_start_hook,   # async (node, input) -> None
-        on_node_end=my_end_hook,       # async (node, result) -> None
-        on_handoff=my_handoff_hook,    # async (result) -> None
+        # Agent lifecycle hooks
+        on_node_start=my_start_hook,       # async (node, input) -> None
+        on_node_end=my_end_hook,           # async (node, result) -> None
+        on_handoff=my_handoff_hook,        # async (result) -> None
+        # Tool lifecycle hooks
+        on_tool_start=my_tool_start_hook,  # async (tool_name, args) -> None
+        on_tool_end=my_tool_end_hook,      # async (tool_name, result) -> None
+        # Reasoning hooks
+        on_reasoning_step=my_reason_hook,  # async (agent_name, thought) -> None
     ),
     max_steps=10,
+    planner=my_planner,  # plan-then-execute (optional)
 )
 result = await orchestrator.run("Why was invoice #4821 rejected?")
 print(result.answer)   # "Invoice #4821 rejected due to missing PO number."
 print(result.status)   # "completed"
+print(result.plan)     # {"strategy": "triage → specialist → verifier"}
 ```

@@ -94,13 +94,6 @@ class AgentTree:
 
     def _count(self) -> int:
         """Total nodes in the tree."""
-        count = 0
-        queue: list[AgentNode] = [self.root]
-        while queue:
-            queue.pop(0)
-            count += 1
-            queue.extend(queue[0].children if queue else [])
-        # Simpler recursive count:
         return self._count_recursive(self.root)
 
     @staticmethod
