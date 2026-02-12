@@ -5,18 +5,30 @@ WHY a tree:  Enterprise agent platforms decompose work into
              Supervisor → Specialist → Verifier chains.  A tree
              makes this hierarchy explicit, inspectable, and
              serialisable (for config-driven construction).
+
+Ported from reference:  configurable_agent/agent_tree.py (AgentNode)
+Adapted to add:
+  - ToolCallable registry so tools are actual async functions, not just names
+  - as_tool() to expose a child agent as a callable tool (agents-as-tools pattern
+    from the reference's sdk_agents.py `agent.as_tool()`)
+  - run_tool() to execute a registered tool with hook integration
 """
 
 from __future__ import annotations
 
+import time
 from typing import Any, Callable, Awaitable
 
-from .handoff_models import HandoffResult
+from .handoff_models import HandoffResult, ToolResult
 
 
 # Type alias for a minimal async agent callable.
 # Signature:  async (input: str) -> HandoffResult
 AgentCallable = Callable[[str], Awaitable[HandoffResult]]
+
+# Type alias for an async tool function.
+# Signature:  async (**kwargs) -> Any
+ToolCallable = Callable[..., Awaitable[Any]]
 
 
 class AgentNode:
@@ -25,6 +37,9 @@ class AgentNode:
     Can be a Supervisor (root), Specialist (internal), or Leaf agent.
     Each node optionally wraps an async *agent callable* that does the
     real work — the tree itself is just structure + metadata.
+
+    Tools can be either string names (for display / config) or actual
+    async callables registered via add_tool().
     """
 
     def __init__(
@@ -42,6 +57,11 @@ class AgentNode:
         self.tools: list[str] = tools or []
         self.metadata: dict[str, Any] = metadata or {}
 
+        # Tool registry: name → async callable.
+        # WHY separate from self.tools:  self.tools is the display list (strings),
+        # _tool_fns holds the actual implementations for execution.
+        self._tool_fns: dict[str, ToolCallable] = {}
+
         # Tree linkage
         self.children: list[AgentNode] = []
         self.parent: AgentNode | None = None
@@ -54,14 +74,87 @@ class AgentNode:
         self.children.append(node)
         return node
 
-    def add_tool(self, tool: str) -> None:
-        """Register a tool name this agent can invoke."""
-        if tool not in self.tools:
-            self.tools.append(tool)
+    def add_tool(self, tool: str | ToolCallable, name: str | None = None) -> None:
+        """Register a tool — either a name (str) or an async callable.
+
+        If *tool* is a callable, its __name__ (or the explicit *name*) is
+        added to the display list AND the function is stored in _tool_fns.
+        If *tool* is a plain string, only the display list is updated.
+        """
+        if callable(tool):
+            tool_name = name or getattr(tool, "__name__", "unknown_tool")
+            if tool_name not in self.tools:
+                self.tools.append(tool_name)
+            self._tool_fns[tool_name] = tool
+        else:
+            if tool not in self.tools:
+                self.tools.append(tool)
 
     def set_agent(self, agent: AgentCallable) -> None:
         """Bind an async callable that implements this agent's logic."""
         self.agent = agent
+
+    # ── Agents-as-tools ────────────────────────────────────────────────
+    # Mirrors the reference's `agent.as_tool()` pattern from sdk_agents.py.
+    # WHY: The Supervisor can "call" a child agent the same way it calls
+    # any tool — unifying the invocation model.
+
+    def as_tool(self, tool_name: str | None = None) -> ToolCallable:
+        """Wrap this agent's run() as an async tool callable.
+
+        Returns an async function with signature (user_input: str) -> dict
+        that the Supervisor (or any parent) can invoke as if it were a tool.
+        The dict contains the HandoffResult fields for easy consumption.
+        """
+        resolved_name = tool_name or f"run_{self.node_id}"
+        node = self  # capture for closure
+
+        async def _agent_as_tool(user_input: str) -> dict[str, Any]:
+            result = await node.run(user_input)
+            return result.model_dump()
+
+        _agent_as_tool.__name__ = resolved_name
+        _agent_as_tool.__doc__ = f"Run child agent '{self.name}' and return its HandoffResult."
+        return _agent_as_tool
+
+    # ── Tool execution ─────────────────────────────────────────────────
+
+    async def run_tool(self, tool_name: str, **kwargs: Any) -> ToolResult:
+        """Execute a registered tool by name and return a typed ToolResult.
+
+        WHY typed ToolResult:  Same reason the reference uses @function_tool
+        with typed returns — callers get validated, structured data instead
+        of raw strings.
+        """
+        fn = self._tool_fns.get(tool_name)
+        if fn is None:
+            return ToolResult(
+                tool_name=tool_name,
+                input_args=kwargs,
+                status="error",
+                error=f"Tool '{tool_name}' not registered on node '{self.name}'",
+            )
+
+        start = time.perf_counter()
+        try:
+            output = await fn(**kwargs)
+            elapsed_ms = int((time.perf_counter() - start) * 1000)
+            return ToolResult(
+                tool_name=tool_name,
+                input_args=kwargs,
+                output=output,
+                status="ok",
+                latency_ms=elapsed_ms,
+            )
+        except Exception as exc:
+            elapsed_ms = int((time.perf_counter() - start) * 1000)
+            return ToolResult(
+                tool_name=tool_name,
+                input_args=kwargs,
+                status="error",
+                error=str(exc),
+                latency_ms=elapsed_ms,
+            )
 
     # ── Queries ────────────────────────────────────────────────────────
 

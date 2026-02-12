@@ -11,17 +11,21 @@ Quick usage:
     print(tree.visualize())
 """
 
-from .agent_node import AgentNode
+from .agent_node import AgentNode, AgentCallable, ToolCallable
 from .agent_tree import AgentTree
-from .handoff_models import HandoffResult, HandoffTraces, SupervisorResult
-from .orchestrator import OrchestratorHooks, SupervisorOrchestrator
+from .handoff_models import HandoffResult, HandoffTraces, ToolResult, SupervisorResult
+from .orchestrator import OrchestratorHooks, SupervisorOrchestrator, PlannerCallable
 
 __all__ = [
     "AgentNode",
+    "AgentCallable",
+    "ToolCallable",
     "AgentTree",
     "HandoffResult",
     "HandoffTraces",
+    "ToolResult",
     "SupervisorResult",
     "OrchestratorHooks",
     "SupervisorOrchestrator",
+    "PlannerCallable",
 ]
